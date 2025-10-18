@@ -47,6 +47,18 @@ impl Encoder {
         }
     }
 
+    fn should_skip_terminator_for_symbol(symbol: char) -> bool {
+        matches!(
+            symbol,
+            '.' | '?' | '!' | '…' | '⋯' | '"' | '\'' | '”' | '’' | '」' | '』' | '〉' | '》'
+                | ')' | ']' | '}' | ',' | ':' | ';' | '―'
+        )
+    }
+
+    fn should_force_terminator_before_symbol(symbol: char) -> bool {
+        matches!(symbol, '/' | '-' | '~' | '∼')
+    }
+
     pub fn encode(&mut self, text: &str, result: &mut Vec<u8>) -> Result<(), String> {
         let words = text
             .split(' ')
@@ -128,16 +140,26 @@ impl Encoder {
 
                 let char_type = CharType::new(*c)?;
 
-                if self.english_indicator && i > 0 && !c.is_ascii_alphabetic() {
-                    // 제31항 국어 문장 안에 그리스 문자가 나올 때에는 그 앞에 로마자표 ⠴을 적고 그 뒤에 로마자 종료표 ⠲을 적는다
-                    if self.is_english {
-                        // 제33항 ｢통일영어점자 규정｣과 ｢한글 점자｣의 점형이 다른 문장 부호(, : ; ―)가 로마자와 한글 사이에 나올 때에는 로마자 종료표를 적지 않고 문장 부호는 「한글 점자」에 따라 적는다.
-                        // 제34항 로마자가 따옴표나 괄호 등으로 묶일 때에는 로마자 종료표를 적지 않는다.
-                        if !['"', ')', '('].contains(c) && ![',', ':', ';', '―'].contains(c) {
+                if self.english_indicator && self.is_english {
+                    match &char_type {
+                        CharType::English(_) => {}
+                        CharType::Number(_) => {
+                            // 제35항 로마자와 숫자가 이어 나올 때에는 로마자 종료표를 적지 않는다.
+                            self.is_english = false;
+                        }
+                        CharType::Symbol(sym) => {
+                            if Self::should_force_terminator_before_symbol(*sym) {
+                                result.push(50);
+                            } else if !Self::should_skip_terminator_for_symbol(*sym) {
+                                result.push(50);
+                            }
+                            self.is_english = false;
+                        }
+                        _ => {
                             result.push(50);
+                            self.is_english = false;
                         }
                     }
-                    self.is_english = false;
                 }
 
                 match char_type {
@@ -370,18 +392,29 @@ impl Encoder {
             self.triple_big_english = false; // Reset after adding terminator
         }
         if !remaining_words.is_empty() {
-            if self.english_indicator
-                && !remaining_words[0]
-                    .chars()
-                    .next()
-                    .unwrap()
-                    .is_ascii_alphabetic()
-            {
-                // 제31항 국어 문장 안에 그리스 문자가 나올 때에는 그 앞에 로마자표 ⠴을 적고 그 뒤에 로마자 종료표 ⠲을 적는다
-                if self.is_english {
-                    result.push(50);
+            if self.english_indicator && self.is_english {
+                if let Some(next_char) = remaining_words[0].chars().next() {
+                    if let Ok(next_type) = CharType::new(next_char) {
+                        match next_type {
+                            CharType::English(_) | CharType::Number(_) => {}
+                            CharType::Symbol(sym) => {
+                                if Self::should_force_terminator_before_symbol(sym) {
+                                    result.push(50);
+                                } else if !Self::should_skip_terminator_for_symbol(sym) {
+                                    result.push(50);
+                                }
+                                self.is_english = false;
+                            }
+                            _ => {
+                                result.push(50);
+                                self.is_english = false;
+                            }
+                        }
+                    } else {
+                        result.push(50);
+                        self.is_english = false;
+                    }
                 }
-                self.is_english = false;
             }
 
             result.push(0);
@@ -694,7 +727,7 @@ mod test {
                     println!("파일: {}, 라인 {}: '{}'", filename, line_num, input);
                     println!("  예상: {}", expected);
                     println!("  실제: {}", actual);
-                    println!("  유니코드 Result: {}", unicode);
+                    println!("  유니코드 Result:   {}", unicode);
                     println!("  유니코드 Expected: {}", braille);
                 } else {
                     let mut colored_input = String::new();
@@ -717,7 +750,7 @@ mod test {
                     println!("파일: {}, 라인 {}: '{}'", filename, line_num, colored_input);
                     println!("  예상: {}", expected);
                     println!("  실제: {}", actual);
-                    println!("  유니코드 Result: {}", colored_unicode);
+                    println!("  유니코드 Result:   {}", colored_unicode);
                     println!("  유니코드 Expected: {}", braille);
                 }
                 println!();
