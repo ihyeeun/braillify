@@ -96,7 +96,13 @@ impl Encoder {
             let word_chars = word.chars().collect::<Vec<char>>();
             let word_len = word_chars.len();
             // 단어 전체가 대문자인지 확인(타 언어인 경우 반드시 false)
-            let is_all_uppercase = word_chars.iter().all(|c| c.is_uppercase());
+            let uppercase_stats = word_chars.iter().filter(|c| c.is_ascii_alphabetic()).fold(
+                (0, 0),
+                |(letters, uppers), ch| {
+                    (letters + 1, uppers + if ch.is_uppercase() { 1 } else { 0 })
+                },
+            );
+            let is_all_uppercase = uppercase_stats.0 >= 2 && uppercase_stats.0 == uppercase_stats.1;
             let has_korean_char = word_chars
                 .iter()
                 .any(|c| 0xAC00 <= *c as u32 && *c as u32 <= 0xD7A3);
@@ -281,9 +287,11 @@ impl Encoder {
                             }
                         }
                         if !self.is_english || i == 0 {
-                            if let Some((code, len)) = rule_en_10_6(
-                                &word_chars[i..].iter().collect::<String>().to_lowercase(),
-                            ) {
+                            if !is_all_uppercase
+                                && let Some((code, len)) = rule_en_10_6(
+                                    &word_chars[i..].iter().collect::<String>().to_lowercase(),
+                                )
+                            {
                                 result.push(code);
                                 *skip_count = len;
                             } else if !is_all_uppercase
