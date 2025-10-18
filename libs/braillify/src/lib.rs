@@ -148,12 +148,17 @@ impl Encoder {
                             self.is_english = false;
                         }
                         CharType::Symbol(sym) => {
-                            if Self::should_force_terminator_before_symbol(*sym) {
+                            if *sym == '(' {
+                                self.is_english = false;
+                            } else if Self::should_force_terminator_before_symbol(*sym) {
                                 result.push(50);
+                                self.is_english = false;
                             } else if !Self::should_skip_terminator_for_symbol(*sym) {
                                 result.push(50);
+                                self.is_english = false;
+                            } else {
+                                self.is_english = false;
                             }
-                            self.is_english = false;
                         }
                         _ => {
                             result.push(50);
