@@ -326,13 +326,47 @@ impl Encoder {
                         result.extend(number::encode_number(c));
                     }
                     CharType::Symbol(c) => {
+                        let mut has_numeric_prefix = false;
+                        let mut has_ascii_prefix = false;
+                        if c == ',' {
+                            let mut j = i;
+                            while j > 0 {
+                                let prev = word_chars[j - 1];
+                                if prev.is_ascii_digit() {
+                                    has_numeric_prefix = true;
+                                    break;
+                                } else if prev.is_ascii_alphabetic() {
+                                    has_ascii_prefix = true;
+                                    break;
+                                } else if prev == ' ' {
+                                    j -= 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        let next_char = if i + 1 < word_len {
+                            Some(word_chars[i + 1])
+                        } else {
+                            remaining_words.first().and_then(|w| w.chars().next())
+                        };
+                        let next_is_digit =
+                            next_char.is_some_and(|ch| ch.is_ascii_digit());
+                        let next_is_ascii =
+                            next_char.is_some_and(|ch| ch.is_ascii_alphabetic());
+                        let next_is_korean =
+                            next_char.is_some_and(|ch| utils::is_korean_char(ch));
+
                         if c == ','
-                            && is_number
-                            && i < word_len - 1
-                            && word_chars[i + 1].is_numeric()
+                            && (((is_number || has_numeric_prefix) && next_is_digit)
+                                || (has_ascii_prefix && next_is_ascii))
                         {
-                            // 제41항 숫자 사이에 붙어 나오는 쉼표와 자릿점은 ⠂으로 적는다.
+                            // 제41항 숫자 또는 로마자 구간에서 쉼표는 ⠂으로 적는다.
                             result.push(2);
+                        } else if c == ',' && next_is_korean {
+                            // 제33항: 로마자와 한글 사이의 문장부호는 한글 점자 규정을 따른다.
+                            result.extend(symbol_shortcut::encode_char_symbol_shortcut(c)?);
                         } else {
                             // 제58항 빠짐표가 여러 개 붙어 나올 때에는 _과 l 사이에 7을 묵자의 개수만큼적어 나타낸다.
                             if c == '□' {
