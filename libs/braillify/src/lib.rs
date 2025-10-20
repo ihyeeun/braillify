@@ -36,6 +36,7 @@ pub struct Encoder {
     english_indicator: bool,
     has_processed_word: bool,
     needs_english_continuation: bool,
+    parenthesis_stack: Vec<bool>,
 }
 
 impl Encoder {
@@ -46,6 +47,7 @@ impl Encoder {
             triple_big_english: false,
             has_processed_word: false,
             needs_english_continuation: false,
+            parenthesis_stack: Vec::new(),
         }
     }
 
@@ -54,16 +56,80 @@ impl Encoder {
         self.needs_english_continuation = needs_continuation;
     }
 
+    fn enter_english(&mut self, result: &mut Vec<u8>) {
+        if self.needs_english_continuation {
+            result.push(48);
+        } else {
+            result.push(52);
+        }
+        self.is_english = true;
+        self.needs_english_continuation = false;
+    }
+
     fn should_skip_terminator_for_symbol(symbol: char) -> bool {
         matches!(
             symbol,
-            '.' | '?' | '!' | '…' | '⋯' | '"' | '\'' | '”' | '’' | '」' | '』' | '〉' | '》'
-                | ')' | ']' | '}' | ',' | ':' | ';' | '―'
+            '.' | '?'
+                | '!'
+                | '…'
+                | '⋯'
+                | '"'
+                | '\''
+                | '”'
+                | '’'
+                | '」'
+                | '』'
+                | '〉'
+                | '》'
+                | ')'
+                | ']'
+                | '}'
+                | ','
+                | ':'
+                | ';'
+                | '―'
         )
     }
 
     fn should_force_terminator_before_symbol(symbol: char) -> bool {
         matches!(symbol, '/' | '-' | '~' | '∼')
+    }
+
+    fn is_english_symbol(symbol: char) -> bool {
+        symbol_shortcut::is_english_symbol_char(symbol)
+    }
+
+    fn requires_single_letter_continuation(letter: char) -> bool {
+        matches!(letter, 'b' | 'c' | 'e' | 'u')
+    }
+
+    fn is_ascii_letter_or_digit(ch: Option<char>) -> bool {
+        ch.is_some_and(|c| c.is_ascii_alphanumeric())
+    }
+
+    fn should_render_symbol_as_english(
+        &self,
+        symbol: char,
+        prev_char: Option<char>,
+        next_char: Option<char>,
+    ) -> bool {
+        if !self.english_indicator {
+            return false;
+        }
+
+        match symbol {
+            '(' => {
+                Self::is_ascii_letter_or_digit(next_char)
+                    && !prev_char.is_some_and(utils::is_korean_char)
+            }
+            ')' => self.parenthesis_stack.last().copied().unwrap_or(false),
+            ',' => {
+                let prev_ascii = Self::is_ascii_letter_or_digit(prev_char);
+                let next_ascii = Self::is_ascii_letter_or_digit(next_char);
+                prev_ascii && next_ascii
+            }
+            _ => false,
+        }
     }
 
     pub fn encode(&mut self, text: &str, result: &mut Vec<u8>) -> Result<(), String> {
@@ -114,16 +180,13 @@ impl Encoder {
                 .iter()
                 .any(|c| 0xAC00 <= *c as u32 && *c as u32 <= 0xD7A3);
 
-            if self.english_indicator && !self.is_english && word_chars[0].is_ascii_alphabetic() {
+            let has_ascii_alphabetic = word_chars.iter().any(|c| c.is_ascii_alphabetic());
+            let mut pending_english_start =
+                self.english_indicator && !self.is_english && has_ascii_alphabetic;
+            if pending_english_start && word_chars[0].is_ascii_alphabetic() {
                 // 제31항 국어 문장 안에 그리스 문자가 나올 때에는 그 앞에 로마자표 ⠴을 적고 그 뒤에 로마자 종료표 ⠲을 적는다
-
-                if self.needs_english_continuation {
-                    result.push(48);
-                } else {
-                    result.push(52);
-                }
-                self.is_english = true;
-                self.needs_english_continuation = false;
+                self.enter_english(result);
+                pending_english_start = false;
             }
 
             if is_all_uppercase && !self.triple_big_english {
@@ -156,6 +219,22 @@ impl Encoder {
                     continue;
                 }
 
+                let prev_char = if i > 0 { Some(word_chars[i - 1]) } else { None };
+                let next_char = if i + 1 < word_len {
+                    Some(word_chars[i + 1])
+                } else {
+                    remaining_words.first().and_then(|w| w.chars().next())
+                };
+
+                if pending_english_start
+                    && (c.is_ascii_alphabetic()
+                        || (self.should_render_symbol_as_english(*c, prev_char, next_char)
+                            && !self.needs_english_continuation))
+                {
+                    self.enter_english(result);
+                    pending_english_start = false;
+                }
+
                 let char_type = CharType::new(*c)?;
 
                 if self.english_indicator && self.is_english {
@@ -166,8 +245,8 @@ impl Encoder {
                             self.exit_english(false);
                         }
                         CharType::Symbol(sym) => {
-                            if *sym == '(' {
-                                self.exit_english(false);
+                            if self.should_render_symbol_as_english(*sym, prev_char, next_char) {
+                                // 영어 문장 부호는 로마자 구간을 유지한다.
                             } else if Self::should_force_terminator_before_symbol(*sym) {
                                 result.push(50);
                                 self.exit_english(false);
@@ -279,13 +358,7 @@ impl Encoder {
                     CharType::English(c) => {
                         if self.english_indicator && !self.is_english {
                             // 제31항 국어 문장 안에 그리스 문자가 나올 때에는 그 앞에 로마자표 ⠴을 적고 그 뒤에 로마자 종료표 ⠲을 적는다
-
-                            if self.needs_english_continuation {
-                                result.push(48);
-                            } else {
-                                result.push(52);
-                            }
-                            self.needs_english_continuation = false;
+                            self.enter_english(result);
                         }
 
                         if (!is_all_uppercase || word_len < 2)
@@ -346,6 +419,26 @@ impl Encoder {
                         result.extend(number::encode_number(c));
                     }
                     CharType::Symbol(c) => {
+                        let mut use_english_symbol =
+                            self.should_render_symbol_as_english(c, prev_char, next_char);
+
+                        if c == '(' {
+                            self.parenthesis_stack.push(use_english_symbol);
+                        } else if c == ')' {
+                            use_english_symbol =
+                                self.parenthesis_stack.pop().unwrap_or(use_english_symbol);
+                        }
+
+                        if self.english_indicator
+                            && (self.is_english || pending_english_start)
+                            && use_english_symbol
+                        {
+                            result.extend(
+                                symbol_shortcut::encode_english_char_symbol_shortcut(c).unwrap(),
+                            );
+                            continue;
+                        }
+
                         let mut has_numeric_prefix = false;
                         let mut has_ascii_prefix = false;
                         if c == ',' {
@@ -371,12 +464,9 @@ impl Encoder {
                         } else {
                             remaining_words.first().and_then(|w| w.chars().next())
                         };
-                        let next_is_digit =
-                            next_char.is_some_and(|ch| ch.is_ascii_digit());
-                        let next_is_ascii =
-                            next_char.is_some_and(|ch| ch.is_ascii_alphabetic());
-                        let next_is_korean =
-                            next_char.is_some_and(|ch| utils::is_korean_char(ch));
+                        let next_is_digit = next_char.is_some_and(|ch| ch.is_ascii_digit());
+                        let next_is_ascii = next_char.is_some_and(|ch| ch.is_ascii_alphabetic());
+                        let next_is_korean = next_char.is_some_and(|ch| utils::is_korean_char(ch));
                         let next_is_alphanumeric = next_is_digit || next_is_ascii;
 
                         if c == ','
@@ -461,29 +551,56 @@ impl Encoder {
         }
         if !remaining_words.is_empty() {
             if self.english_indicator && self.is_english {
-                if let Some(next_char) = remaining_words[0].chars().next() {
-                    if let Ok(next_type) = CharType::new(next_char) {
-                        match next_type {
-                            CharType::English(_) | CharType::Number(_) => {}
-                            CharType::Symbol(sym) => {
-                                if Self::should_force_terminator_before_symbol(sym) {
+                if let Some(next_word) = remaining_words.first() {
+                    let ascii_letters = next_word
+                        .chars()
+                        .filter(|c| c.is_ascii_alphabetic())
+                        .collect::<Vec<_>>();
+                    let has_invalid_symbol = next_word.chars().any(|ch| {
+                        !(ch.is_ascii_alphabetic()
+                            || Self::is_english_symbol(ch)
+                            || utils::is_korean_char(ch))
+                    });
+                    let is_single_letter_word = ascii_letters.len() == 1
+                        && !next_word.chars().any(|ch| ch.is_ascii_digit())
+                        && !has_invalid_symbol;
+
+                    if is_single_letter_word
+                        && Self::requires_single_letter_continuation(
+                            ascii_letters[0].to_ascii_lowercase(),
+                        )
+                    {
+                        self.exit_english(true);
+                    } else if let Some(next_char) = next_word.chars().next() {
+                        if let Ok(next_type) = CharType::new(next_char) {
+                            match next_type {
+                                CharType::English(_) | CharType::Number(_) => {}
+                                CharType::Symbol(sym) => {
+                                    if self.english_indicator
+                                        && self.is_english
+                                        && Self::is_english_symbol(sym)
+                                    {
+                                        // 연속되는 영어 구절 사이에 오는 영어 문장 부호는
+                                        // 로마자 구간을 유지한다.
+                                    } else if Self::should_force_terminator_before_symbol(sym) {
+                                        result.push(50);
+                                        self.exit_english(false);
+                                    } else if !Self::should_skip_terminator_for_symbol(sym) {
+                                        result.push(50);
+                                        self.exit_english(false);
+                                    } else {
+                                        self.exit_english(true);
+                                    }
+                                }
+                                _ => {
                                     result.push(50);
                                     self.exit_english(false);
-                                } else if !Self::should_skip_terminator_for_symbol(sym) {
-                                    result.push(50);
-                                    self.exit_english(false);
-                                } else {
-                                    self.exit_english(true);
                                 }
                             }
-                            _ => {
-                                result.push(50);
-                                self.exit_english(false);
-                            }
+                        } else {
+                            result.push(50);
+                            self.exit_english(false);
                         }
-                    } else {
-                        result.push(50);
-                        self.exit_english(false);
                     }
                 }
             }
