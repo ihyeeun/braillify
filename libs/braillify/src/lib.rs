@@ -35,6 +35,7 @@ pub struct Encoder {
     triple_big_english: bool,
     english_indicator: bool,
     has_processed_word: bool,
+    needs_english_continuation: bool,
 }
 
 impl Encoder {
@@ -44,7 +45,13 @@ impl Encoder {
             is_english: false,
             triple_big_english: false,
             has_processed_word: false,
+            needs_english_continuation: false,
         }
+    }
+
+    fn exit_english(&mut self, needs_continuation: bool) {
+        self.is_english = false;
+        self.needs_english_continuation = needs_continuation;
     }
 
     fn should_skip_terminator_for_symbol(symbol: char) -> bool {
@@ -110,8 +117,13 @@ impl Encoder {
             if self.english_indicator && !self.is_english && word_chars[0].is_ascii_alphabetic() {
                 // 제31항 국어 문장 안에 그리스 문자가 나올 때에는 그 앞에 로마자표 ⠴을 적고 그 뒤에 로마자 종료표 ⠲을 적는다
 
+                if self.needs_english_continuation {
+                    result.push(48);
+                } else {
+                    result.push(52);
+                }
                 self.is_english = true;
-                result.push(52);
+                self.needs_english_continuation = false;
             }
 
             if is_all_uppercase && !self.triple_big_english {
@@ -151,30 +163,31 @@ impl Encoder {
                         CharType::English(_) => {}
                         CharType::Number(_) => {
                             // 제35항 로마자와 숫자가 이어 나올 때에는 로마자 종료표를 적지 않는다.
-                            self.is_english = false;
+                            self.exit_english(false);
                         }
                         CharType::Symbol(sym) => {
                             if *sym == '(' {
-                                self.is_english = false;
+                                self.exit_english(false);
                             } else if Self::should_force_terminator_before_symbol(*sym) {
                                 result.push(50);
-                                self.is_english = false;
+                                self.exit_english(false);
                             } else if !Self::should_skip_terminator_for_symbol(*sym) {
                                 result.push(50);
-                                self.is_english = false;
+                                self.exit_english(false);
                             } else {
-                                self.is_english = false;
+                                self.exit_english(true);
                             }
                         }
                         _ => {
                             result.push(50);
-                            self.is_english = false;
+                            self.exit_english(false);
                         }
                     }
                 }
 
                 match char_type {
                     CharType::Korean(korean) => {
+                        self.needs_english_continuation = false;
                         if is_number
                             && (['ㄴ', 'ㄷ', 'ㅁ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ'].contains(&korean.cho)
                                 || *c == '운')
@@ -214,6 +227,7 @@ impl Encoder {
                         }
                     }
                     CharType::KoreanPart(c) => {
+                        self.needs_english_continuation = false;
                         match word_len {
                             1 => {
                                 // 8항 - 단독으로 쓰인 자모
@@ -266,7 +280,12 @@ impl Encoder {
                         if self.english_indicator && !self.is_english {
                             // 제31항 국어 문장 안에 그리스 문자가 나올 때에는 그 앞에 로마자표 ⠴을 적고 그 뒤에 로마자 종료표 ⠲을 적는다
 
-                            result.push(52);
+                            if self.needs_english_continuation {
+                                result.push(48);
+                            } else {
+                                result.push(52);
+                            }
+                            self.needs_english_continuation = false;
                         }
 
                         if (!is_all_uppercase || word_len < 2)
@@ -313,6 +332,7 @@ impl Encoder {
                             result.push(english::encode_english(c)?);
                         }
                         self.is_english = true;
+                        self.needs_english_continuation = false;
                     }
                     CharType::Number(c) => {
                         if !is_number {
@@ -357,10 +377,11 @@ impl Encoder {
                             next_char.is_some_and(|ch| ch.is_ascii_alphabetic());
                         let next_is_korean =
                             next_char.is_some_and(|ch| utils::is_korean_char(ch));
+                        let next_is_alphanumeric = next_is_digit || next_is_ascii;
 
                         if c == ','
                             && (((is_number || has_numeric_prefix) && next_is_digit)
-                                || (has_ascii_prefix && next_is_ascii))
+                                || (has_ascii_prefix && next_is_alphanumeric))
                         {
                             // 제41항 숫자 또는 로마자 구간에서 쉼표는 ⠂으로 적는다.
                             result.push(2);
@@ -447,19 +468,22 @@ impl Encoder {
                             CharType::Symbol(sym) => {
                                 if Self::should_force_terminator_before_symbol(sym) {
                                     result.push(50);
+                                    self.exit_english(false);
                                 } else if !Self::should_skip_terminator_for_symbol(sym) {
                                     result.push(50);
+                                    self.exit_english(false);
+                                } else {
+                                    self.exit_english(true);
                                 }
-                                self.is_english = false;
                             }
                             _ => {
                                 result.push(50);
-                                self.is_english = false;
+                                self.exit_english(false);
                             }
                         }
                     } else {
                         result.push(50);
-                        self.is_english = false;
+                        self.exit_english(false);
                     }
                 }
             }
