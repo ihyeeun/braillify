@@ -126,7 +126,7 @@ impl Encoder {
     }
 
     fn requires_single_letter_continuation(letter: char) -> bool {
-        matches!(letter, 'b' | 'c' | 'e' | 'u')
+        letter.is_ascii_lowercase()
     }
 
     fn is_ascii_letter_or_digit(ch: Option<char>) -> bool {
@@ -335,7 +335,9 @@ impl Encoder {
                         CharType::English(_) => {}
                         CharType::Number(_) => {
                             // 제35항 로마자와 숫자가 이어 나올 때에는 로마자 종료표를 적지 않는다.
-                            self.exit_english(false);
+                            // 숫자 뒤에 로마자가 이어질 경우 연속표가 필요하므로 종료표 대신
+                            // 연속표 플래그만 설정한다.
+                            self.exit_english(true);
                         }
                         CharType::Symbol(sym) => {
                             if self.should_render_symbol_as_english(
@@ -661,6 +663,7 @@ impl Encoder {
                     let has_invalid_symbol = next_word.chars().any(|ch| {
                         !(ch.is_ascii_alphabetic()
                             || Self::is_english_symbol(ch)
+                            || symbol_shortcut::is_symbol_char(ch)
                             || utils::is_korean_char(ch))
                     });
                     let is_single_letter_word = ascii_letters.len() == 1
@@ -668,9 +671,7 @@ impl Encoder {
                         && !has_invalid_symbol;
 
                     if is_single_letter_word
-                        && Self::requires_single_letter_continuation(
-                            ascii_letters[0].to_ascii_lowercase(),
-                        )
+                        && Self::requires_single_letter_continuation(ascii_letters[0])
                     {
                         self.exit_english(true);
                     } else if let Some(next_char) = next_word.chars().next() {
