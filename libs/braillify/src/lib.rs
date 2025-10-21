@@ -126,7 +126,7 @@ impl Encoder {
     }
 
     fn requires_single_letter_continuation(letter: char) -> bool {
-        letter.is_ascii_lowercase()
+        letter.is_ascii_lowercase() && !matches!(letter, 'a' | 'i' | 'o')
     }
 
     fn is_ascii_letter_or_digit(ch: Option<char>) -> bool {
