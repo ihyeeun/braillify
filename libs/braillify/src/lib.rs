@@ -16,6 +16,7 @@ mod char_struct;
 #[cfg(feature = "cli")]
 pub mod cli;
 mod english;
+mod english_logic;
 mod jauem;
 mod korean_char;
 mod korean_part;
@@ -64,165 +65,6 @@ impl Encoder {
         }
         self.is_english = true;
         self.needs_english_continuation = false;
-    }
-
-    fn should_skip_terminator_for_symbol(symbol: char) -> bool {
-        matches!(
-            symbol,
-            '.' | '?'
-                | '!'
-                | '…'
-                | '⋯'
-                | '"'
-                | '\''
-                | '”'
-                | '’'
-                | '」'
-                | '』'
-                | '〉'
-                | '》'
-                | '('
-                | ')'
-                | ']'
-                | '}'
-                | ','
-                | ':'
-                | ';'
-                | '―'
-        )
-    }
-
-    fn should_request_continuation(symbol: char) -> bool {
-        matches!(
-            symbol,
-            '.' | '?'
-                | '!'
-                | '…'
-                | '⋯'
-                | '"'
-                | '\''
-                | '”'
-                | '’'
-                | '」'
-                | '』'
-                | '〉'
-                | '》'
-                | ')'
-                | ']'
-                | '}'
-                | ','
-                | ':'
-                | ';'
-                | '―'
-        )
-    }
-
-    fn should_force_terminator_before_symbol(symbol: char) -> bool {
-        matches!(symbol, '/' | '-' | '~' | '∼')
-    }
-
-    fn is_english_symbol(symbol: char) -> bool {
-        symbol_shortcut::is_english_symbol_char(symbol)
-    }
-
-    fn requires_single_letter_continuation(letter: char) -> bool {
-        letter.is_ascii_lowercase() && !matches!(letter, 'a' | 'i' | 'o')
-    }
-
-    fn is_ascii_letter_or_digit(ch: Option<char>) -> bool {
-        ch.is_some_and(|c| c.is_ascii_alphanumeric())
-    }
-
-    fn prev_ascii_letter_or_digit(word_chars: &[char], index: usize) -> bool {
-        let mut j = index;
-        while j > 0 {
-            let ch = word_chars[j - 1];
-            if ch.is_ascii_alphanumeric() {
-                return true;
-            }
-            if symbol_shortcut::is_english_symbol_char(ch) {
-                j -= 1;
-                continue;
-            }
-            break;
-        }
-        false
-    }
-
-    fn next_ascii_letter_or_digit(
-        &self,
-        word_chars: &[char],
-        index: usize,
-        remaining_words: &[&str],
-    ) -> bool {
-        let mut j = index + 1;
-        while j < word_chars.len() {
-            let ch = word_chars[j];
-            if ch.is_ascii_alphanumeric() {
-                return true;
-            }
-            if symbol_shortcut::is_english_symbol_char(ch) {
-                j += 1;
-                continue;
-            }
-            return false;
-        }
-
-        for word in remaining_words {
-            for ch in word.chars() {
-                if ch.is_ascii_alphanumeric() {
-                    return true;
-                }
-                if symbol_shortcut::is_english_symbol_char(ch) {
-                    continue;
-                }
-                return false;
-            }
-        }
-
-        false
-    }
-
-    fn should_render_symbol_as_english(
-        &self,
-        symbol: char,
-        word_chars: &[char],
-        index: usize,
-        remaining_words: &[&str],
-    ) -> bool {
-        let prev_char = if index > 0 {
-            Some(word_chars[index - 1])
-        } else {
-            None
-        };
-        let next_char = if index + 1 < word_chars.len() {
-            Some(word_chars[index + 1])
-        } else {
-            remaining_words.first().and_then(|w| w.chars().next())
-        };
-        if !self.english_indicator {
-            return false;
-        }
-
-        match symbol {
-            '(' => {
-                Self::is_ascii_letter_or_digit(next_char)
-                    && !prev_char.is_some_and(utils::is_korean_char)
-            }
-            ')' => self.parenthesis_stack.last().copied().unwrap_or(false),
-            ',' => {
-                if !self.is_english {
-                    return false;
-                }
-
-                let prev_ascii = Self::prev_ascii_letter_or_digit(word_chars, index);
-                let next_ascii =
-                    self.next_ascii_letter_or_digit(word_chars, index, remaining_words);
-
-                prev_ascii && next_ascii
-            }
-            _ => false,
-        }
     }
 
     pub fn encode(&mut self, text: &str, result: &mut Vec<u8>) -> Result<(), String> {
@@ -296,9 +138,9 @@ impl Encoder {
                     result.push(32);
                     result.push(32);
                 } else if word_len >= 2 {
-                    // 28항 [붙임] 로마자가 한 글자만 대문자일 때에는 대문자 기호표 ⠠을 그 앞에 적고, 단
-                    // 어 전체가 대문자이거나 두 글자 이상 연속해서 대문자일 때에는 대문자 단어표
-                    // ⠠⠠을 그 앞에 적는다. 세 개 이상의 연속된 단어가 모두 대문자일 때에는 첫 단어
+                    // 28항 [붙임] 로마자가 한 글자만 대문자일 때에는 대문자 기호표 ⠠을 그 앞에 적고, 
+                    // 단어 전체가 대문자이거나 두 글자 이상 연속해서 대문자일 때에는 대문자 단어표 ⠠⠠을 그 앞에 적는다.
+                    // 세 개 이상의 연속된 단어가 모두 대문자일 때에는 첫 단어
                     // 앞에 대문자 구절표 ⠠⠠⠠을 적고, 마지막 단어 뒤에 대문자 종료표 ⠠⠄을 적는다.
                     result.push(32);
                     result.push(32);
@@ -307,7 +149,6 @@ impl Encoder {
 
             let mut is_number = false;
             let mut is_big_english = false;
-            // let mut over_three_big_english = false;
 
             for (i, c) in word_chars.iter().enumerate() {
                 if *skip_count > 0 {
@@ -317,7 +158,10 @@ impl Encoder {
 
                 if pending_english_start
                     && (c.is_ascii_alphabetic()
-                        || (self.should_render_symbol_as_english(
+                        || (english_logic::should_render_symbol_as_english(
+                            self.english_indicator,
+                            self.is_english,
+                            &self.parenthesis_stack,
                             *c,
                             &word_chars,
                             i,
@@ -340,21 +184,24 @@ impl Encoder {
                             self.exit_english(true);
                         }
                         CharType::Symbol(sym) => {
-                            if self.should_render_symbol_as_english(
+                            if english_logic::should_render_symbol_as_english(
+                                self.english_indicator,
+                                self.is_english,
+                                &self.parenthesis_stack,
                                 *sym,
                                 &word_chars,
                                 i,
                                 remaining_words,
                             ) {
                                 // 영어 문장 부호는 로마자 구간을 유지한다.
-                            } else if Self::should_force_terminator_before_symbol(*sym) {
+                            } else if english_logic::should_force_terminator_before_symbol(*sym) {
                                 result.push(50);
                                 self.exit_english(false);
-                            } else if !Self::should_skip_terminator_for_symbol(*sym) {
+                            } else if !english_logic::should_skip_terminator_for_symbol(*sym) {
                                 result.push(50);
                                 self.exit_english(false);
                             } else {
-                                self.exit_english(Self::should_request_continuation(*sym));
+                                self.exit_english(english_logic::should_request_continuation(*sym));
                             }
                         }
                         _ => {
@@ -519,7 +366,10 @@ impl Encoder {
                         result.extend(number::encode_number(c));
                     }
                     CharType::Symbol(c) => {
-                        let mut use_english_symbol = self.should_render_symbol_as_english(
+                        let mut use_english_symbol = english_logic::should_render_symbol_as_english(
+                            self.english_indicator,
+                            self.is_english,
+                            &self.parenthesis_stack,
                             c,
                             &word_chars,
                             i,
@@ -662,7 +512,7 @@ impl Encoder {
                         .collect::<Vec<_>>();
                     let has_invalid_symbol = next_word.chars().any(|ch| {
                         !(ch.is_ascii_alphabetic()
-                            || Self::is_english_symbol(ch)
+                            || english_logic::is_english_symbol(ch)
                             || symbol_shortcut::is_symbol_char(ch)
                             || utils::is_korean_char(ch))
                     });
@@ -671,7 +521,7 @@ impl Encoder {
                         && !has_invalid_symbol;
 
                     if is_single_letter_word
-                        && Self::requires_single_letter_continuation(ascii_letters[0])
+                        && english_logic::requires_single_letter_continuation(ascii_letters[0])
                     {
                         self.exit_english(true);
                     } else if let Some(next_char) = next_word.chars().next() {
@@ -681,18 +531,23 @@ impl Encoder {
                                 CharType::Symbol(sym) => {
                                     if self.english_indicator
                                         && self.is_english
-                                        && Self::is_english_symbol(sym)
+                                        && english_logic::is_english_symbol(sym)
                                     {
                                         // 연속되는 영어 구절 사이에 오는 영어 문장 부호는
                                         // 로마자 구간을 유지한다.
-                                    } else if Self::should_force_terminator_before_symbol(sym) {
+                                    } else if english_logic::should_force_terminator_before_symbol(
+                                        sym,
+                                    ) {
                                         result.push(50);
                                         self.exit_english(false);
-                                    } else if !Self::should_skip_terminator_for_symbol(sym) {
+                                    } else if !english_logic::should_skip_terminator_for_symbol(sym)
+                                    {
                                         result.push(50);
                                         self.exit_english(false);
                                     } else {
-                                        self.exit_english(Self::should_request_continuation(sym));
+                                        self.exit_english(
+                                            english_logic::should_request_continuation(sym),
+                                        );
                                     }
                                 }
                                 _ => {
